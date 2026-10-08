@@ -48,14 +48,15 @@ int take_args_files(int argc, char **argv, char **file, const char *file_key);
 int read_input_matrix(const char *filename, Matrix *matrix, long start_offset,
                       long first_elem_offset);
 
-int create_matrx(Matrix **matrix, MatrixType type);
+int create_matrix(Matrix **matrix, MatrixType type);
 
 int create_matrix_with_sizes(Matrix **matrix, uint32_t rows, uint32_t cols, MatrixType type);
 
 int matrix_convolution(const Matrix *matrix, const Matrix *kernel, Matrix *res);
 
+void destruct_matrix(Matrix *matrix);
 
-int write_output_matrix(const char *filename, Matrix *matrix, long elems_offset, long first_elem_offset);
+int write_output_matrix(const char *filename, const Matrix *matrix, long elems_offset, long first_elem_offset);
 
 int main(int argc, char **argv) {
     int rc = EXIT_SUCCESS;
@@ -63,10 +64,10 @@ int main(int argc, char **argv) {
     rc = take_args_files(argc, argv, &input_file, "-i");
     rc = rc == EXIT_SUCCESS ? take_args_files(argc, argv, &output_file, "-o") : rc;
     Matrix *matrixA = NULL, *matrixB = NULL, *matrixC = NULL, *matrixD = NULL;
-    rc = rc == EXIT_SUCCESS ? create_matrx(&matrixA, SIMPLE) : rc;
-    rc = rc == EXIT_SUCCESS ? create_matrx(&matrixB, SIMPLE) : rc;
-    rc = rc == EXIT_SUCCESS ? create_matrx(&matrixC, SIMPLE) : rc;
-    rc = rc == EXIT_SUCCESS ? create_matrx(&matrixD, KERNEL) : rc;
+    rc = rc == EXIT_SUCCESS ? create_matrix(&matrixA, SIMPLE) : rc;
+    rc = rc == EXIT_SUCCESS ? create_matrix(&matrixB, SIMPLE) : rc;
+    rc = rc == EXIT_SUCCESS ? create_matrix(&matrixC, SIMPLE) : rc;
+    rc = rc == EXIT_SUCCESS ? create_matrix(&matrixD, KERNEL) : rc;
     rc = rc == EXIT_SUCCESS ? read_input_matrix(input_file, matrixA, 0, 0) : rc;
     rc = rc == EXIT_SUCCESS ? read_input_matrix(input_file, matrixB, 0, 1) : rc;
     rc = rc == EXIT_SUCCESS ? read_input_matrix(input_file, matrixC, 0, 2) : rc;
@@ -92,6 +93,13 @@ int main(int argc, char **argv) {
     rc = rc == EXIT_SUCCESS ? write_output_matrix(output_file, matrixARes, MATRIX_OFFSET_SIMPLE, 0) : rc;
     rc = rc == EXIT_SUCCESS ? write_output_matrix(output_file, matrixBRes, MATRIX_OFFSET_SIMPLE, 1) : rc;
     rc = rc == EXIT_SUCCESS ? write_output_matrix(output_file, matrixCRes, MATRIX_OFFSET_SIMPLE, 2) : rc;
+    destruct_matrix(matrixA);
+    destruct_matrix(matrixB);
+    destruct_matrix(matrixC);
+    destruct_matrix(matrixD);
+    destruct_matrix(matrixARes);
+    destruct_matrix(matrixBRes);
+    destruct_matrix(matrixCRes);
     return rc;
 }
 
@@ -112,80 +120,90 @@ int read_input_matrix(const char *filename, Matrix *matrix, long start_offset,
                       long first_elem_offset) {
     int rc = EXIT_SUCCESS;
     FILE *f = fopen(filename, "rb");
-    if (f == NULL)
+
+    if (f == NULL) {
         rc = FILE_OPEN_ERROR;
-    else {
-        size_t n;
-        n = fseek(f, start_offset, SEEK_SET);
-        rc = n ? FILE_READ_ERROR : rc;
+    }
+
+    if (rc == EXIT_SUCCESS) {
+        if (fseek(f, start_offset, SEEK_SET) != 0)
+            rc = FILE_READ_ERROR;
+    }
+
+    if (rc == EXIT_SUCCESS && matrix->type == SIMPLE) {
+        if (fread(&matrix->rows, SIMPLE_MATRIX_SIZE_BYTES, 1, f) != 1 ||
+            fread(&matrix->cols, SIMPLE_MATRIX_SIZE_BYTES, 1, f) != 1)
+            rc = FILE_READ_ERROR;
+    } else if (rc == EXIT_SUCCESS && matrix->type == KERNEL) {
+        uint16_t buf = 0;
+        if (fread(&buf, KERNEL_MATRIX_SIZE_BYTES, 1, f) != 1)
+            rc = FILE_READ_ERROR;
+        else
+            matrix->rows = buf;
         if (rc == EXIT_SUCCESS) {
-            if (matrix->type == SIMPLE) {
-                n = fread(&matrix->rows, SIMPLE_MATRIX_SIZE_BYTES, 1, f);
-                rc = (n != 1 ? FILE_READ_ERROR : rc);
-                if (rc == EXIT_SUCCESS) {
-                    n = fread(&matrix->cols, SIMPLE_MATRIX_SIZE_BYTES, 1, f);
-                    rc = n != 1 ? FILE_READ_ERROR : rc;
-                }
-            } else if (matrix->type == KERNEL) {
-                uint16_t buf;
-                n = fread(&buf, KERNEL_MATRIX_SIZE_BYTES, 1, f);
-                rc = (n != 1 ? FILE_READ_ERROR : rc);
-                matrix->rows = rc == EXIT_SUCCESS ? buf : matrix->rows;
-                if (rc == EXIT_SUCCESS) {
-                    n = fread(&buf, KERNEL_MATRIX_SIZE_BYTES, 1, f);
-                    rc = (n != 1 ? FILE_READ_ERROR : rc);
-                    matrix->cols = rc == EXIT_SUCCESS ? buf : matrix->cols;
-                }
-            }
+            if (fread(&buf, KERNEL_MATRIX_SIZE_BYTES, 1, f) != 1)
+                rc = FILE_READ_ERROR;
+            else
+                matrix->cols = buf;
         }
+    }
+
+    if (rc == EXIT_SUCCESS) {
         matrix->data = calloc(matrix->rows, sizeof(*matrix->data));
         if (matrix->data == NULL)
             rc = MEMORY_ALLOCATION_ERROR;
-        n = fseek(f, first_elem_offset, SEEK_CUR);
-        rc = n ? FILE_READ_ERROR : rc;
-        size_t i = 0;
-        for (; i < matrix->rows && rc == EXIT_SUCCESS; ++i) {
-            matrix->data[i] = malloc(sizeof(**matrix->data) * matrix->cols);
-            if (matrix->data[i] == NULL) {
-                rc = MEMORY_ALLOCATION_ERROR;
+    }
+
+    if (rc == EXIT_SUCCESS) {
+        if (fseek(f, first_elem_offset, SEEK_CUR) != 0)
+            rc = FILE_READ_ERROR;
+    }
+
+    for (size_t i = 0; i < matrix->rows && rc == EXIT_SUCCESS; ++i) {
+        matrix->data[i] = calloc(matrix->cols, sizeof(**matrix->data));
+        if (matrix->data[i] == NULL)
+            rc = MEMORY_ALLOCATION_ERROR;
+    }
+
+    for (size_t i = 0; i < matrix->rows && rc == EXIT_SUCCESS; ++i) {
+        for (size_t j = 0; j < matrix->cols && rc == EXIT_SUCCESS; ++j) {
+            if (matrix->type == SIMPLE) {
+                uint8_t buf = 0;
+                if (fread(&buf, 1, 1, f) != 1)
+                    rc = FILE_READ_ERROR;
+                else
+                    matrix->data[i][j] = (int32_t) buf;
+            } else {
+                int8_t buf = 0;
+                if (fread(&buf, 1, 1, f) != 1)
+                    rc = FILE_READ_ERROR;
+                else
+                    matrix->data[i][j] = (int32_t) buf;
             }
-            for (size_t j = 0; j < matrix->cols && rc == EXIT_SUCCESS; ++j) {
-                if (rc == EXIT_SUCCESS) {
-                    if (matrix->type == SIMPLE) {
-                        uint8_t buf;
-                        n = fread(&buf, SIMPLE_MATRIX_ELEM_BYTES, 1, f);
-                        rc = (n != 1 ? FILE_READ_ERROR : rc);
-                        matrix->data[i][j] = rc == EXIT_SUCCESS ? buf : matrix->data[i][j];
-                    } else if (matrix->type == KERNEL) {
-                        int8_t buf;
-                        n = fread(&buf, KERNEL_MATRIX_ELEM_BYTES, 1, f);
-                        rc = n != 1 ? FILE_READ_ERROR : rc;
-                        matrix->data[i][j] = rc == EXIT_SUCCESS ? buf : matrix->data[i][j];
-                    }
-                }
-                if (i != matrix->rows - 1 && j != matrix->cols - 1) {
-                    long offset;
-                    if (matrix->type == SIMPLE) {
-                        offset = MATRIX_OFFSET_SIMPLE;
-                    } else if (matrix->type == KERNEL) {
-                        offset = MATRIX_OFFSET_KERNEL;
-                    }
-                    n = fseek(f, offset, SEEK_CUR);
-                    rc = (n ? FILE_READ_ERROR : rc);
-                }
+
+            if (rc == EXIT_SUCCESS &&
+                (i != matrix->rows - 1 || j != matrix->cols - 1)) {
+                long offset = (matrix->type == SIMPLE)
+                                  ? MATRIX_OFFSET_SIMPLE
+                                  : MATRIX_OFFSET_KERNEL;
+                if (fseek(f, offset, SEEK_CUR) != 0)
+                    rc = FILE_READ_ERROR;
             }
-        }
-        fclose(f);
-        if (rc == MEMORY_ALLOCATION_ERROR && i > 0) {
-            for (size_t j = 0; j < i; ++j)
-                free(matrix->data[i]);
-            free(matrix->data);
         }
     }
+
+    if (rc != EXIT_SUCCESS && matrix->data != NULL) {
+        for (size_t i = 0; i < matrix->rows; ++i)
+            free(matrix->data[i]);
+        free(matrix->data);
+        matrix->data = NULL;
+    }
+    if (f != NULL)
+        fclose(f);
     return rc;
 }
 
-int create_matrx(Matrix **matrix, MatrixType type) {
+int create_matrix(Matrix **matrix, MatrixType type) {
     int rc = EXIT_SUCCESS;
     *matrix = malloc(sizeof(**matrix));
     if (*matrix == NULL)
@@ -202,105 +220,128 @@ int create_matrx(Matrix **matrix, MatrixType type) {
 
 int create_matrix_with_sizes(Matrix **matrix, uint32_t rows, uint32_t cols, MatrixType type) {
     int rc = EXIT_SUCCESS;
+
     *matrix = malloc(sizeof(**matrix));
-    if (*matrix == NULL)
+    if (*matrix == NULL) {
         rc = MEMORY_ALLOCATION_ERROR;
-    else {
+    } else {
         (*matrix)->type = type;
         (*matrix)->rows = rows;
         (*matrix)->cols = cols;
-        (*matrix)->data = calloc((*matrix)->rows, sizeof(*(*matrix)->data));
-        if ((*matrix)->data == NULL)
+        (*matrix)->data = calloc(rows, sizeof(*(*matrix)->data));
+
+        if ((*matrix)->data == NULL) {
             rc = MEMORY_ALLOCATION_ERROR;
-        size_t i = 0;
-        for (; i < (*matrix)->rows && rc == EXIT_SUCCESS; ++i) {
-            (*matrix)->data[i] = calloc((*matrix)->cols, sizeof(**(*matrix)->data));
-            if ((*matrix)->data[i] == NULL) {
-                rc = MEMORY_ALLOCATION_ERROR;
-            }
         }
-        if (rc == MEMORY_ALLOCATION_ERROR && i > 0) {
-            for (size_t j = 0; j < i; ++j)
+
+        for (size_t i = 0; i < rows && rc == EXIT_SUCCESS; ++i) {
+            (*matrix)->data[i] = calloc(cols, sizeof(**(*matrix)->data));
+            if ((*matrix)->data[i] == NULL)
+                rc = MEMORY_ALLOCATION_ERROR;
+        }
+
+        if (rc != EXIT_SUCCESS && (*matrix)->data != NULL) {
+            for (size_t i = 0; i < rows; ++i)
                 free((*matrix)->data[i]);
             free((*matrix)->data);
+            (*matrix)->data = NULL;
         }
     }
+
     return rc;
 }
 
 int matrix_convolution(const Matrix *matrix, const Matrix *kernel, Matrix *res) {
-    if (matrix == NULL || kernel == NULL || res == NULL)
-        return FUNC_ARGS_ERROR;
-    for (size_t i = 0; i < matrix->rows; ++i) {
-        for (size_t j = 0; j < matrix->cols; ++j) {
-            res->data[i][j] = 0;
-            const int up_i = (int) i - (int) kernel->rows / 2,
-                    down_i = (int) i + (int) kernel->rows / 2,
-                    left_j = (int) j - (int) kernel->cols / 2,
-                    right_j = (int) j + (int) kernel->cols / 2;
-            for (size_t k = (0 > up_i ? 0 : up_i); k < ((int) matrix->rows < down_i ? matrix->rows : down_i); ++k) {
-                for (size_t l = (0 > left_j ? 0 : left_j); l < ((int) matrix->cols < right_j ? matrix->cols : right_j);
-                     ++l) {
-                    int32_t add_val = matrix->data[k][l] * kernel->data[k][l];
-                    if (add_val > UINT8_MAX)
-                        add_val %= UNSIGNED_MODULE;
-                    else if (add_val < 0)
-                        add_val = -add_val % SIGNED_MODULE;
-                    res->data[k][l] += add_val;
-                    if (res->data[k][l] > UINT8_MAX)
-                        res->data[k][l] %= UNSIGNED_MODULE;
-                }
-            }
-        }
-    }
-    return EXIT_SUCCESS;
-}
-
-int write_output_matrix(const char *filename, Matrix *matrix, long elems_offset, long first_elem_offset) {
     int rc = EXIT_SUCCESS;
-    FILE *f = fopen(filename, "wb");
-    if (f == NULL)
-        rc = FILE_OPEN_ERROR;
-    else {
-        size_t n;
-        if (matrix->type == SIMPLE) {
-            n = fwrite(&matrix->rows, SIMPLE_MATRIX_SIZE_BYTES, 1, f);
-            rc = n != 1 ? FILE_WRITE_ERROR : rc;
-            if (rc == EXIT_SUCCESS) {
-                n = fwrite(&matrix->cols, SIMPLE_MATRIX_SIZE_BYTES, 1, f);
-                rc = n != 1 ? FILE_WRITE_ERROR : rc;
-            }
-        } else if (matrix->type == KERNEL) {
-            uint16_t buf = matrix->rows;
-            n = fwrite(&buf, KERNEL_MATRIX_SIZE_BYTES, 1, f);
-            rc = n != 1 ? FILE_WRITE_ERROR : rc;
-            if (rc == EXIT_SUCCESS) {
-                buf = matrix->cols;
-                n = fwrite(&buf, KERNEL_MATRIX_SIZE_BYTES, 1, f);
-                rc = n != 1 ? FILE_WRITE_ERROR : rc;
-            }
-        }
-        if (rc == EXIT_SUCCESS) {
-            for (size_t i = 0; i < matrix->rows && rc == EXIT_SUCCESS; ++i) {
-                for (size_t j = 0; j < matrix->cols && rc == EXIT_SUCCESS; ++j) {
-                    n = fseek(f, first_elem_offset, SEEK_CUR);
-                    rc = n != 1 ? FILE_WRITE_ERROR : rc;
-                    if (matrix->type == SIMPLE) {
-                        uint8_t buf = matrix->data[i][j];
-                        n = fwrite(&buf, SIMPLE_MATRIX_ELEM_BYTES, 1, f);
-                        rc = n != 1 ? FILE_WRITE_ERROR : rc;
-                    } else if (matrix->type == KERNEL) {
-                        int16_t buf = (int16_t) matrix->data[i][j];
-                        n = fwrite(&buf, KERNEL_MATRIX_ELEM_BYTES, 1, f);
-                        rc = n != 1 ? FILE_WRITE_ERROR : rc;
-                    }
-                    if (i != matrix->rows - 1 && j != matrix->cols - 1) {
-                        n = fseek(f, elems_offset, SEEK_CUR);
-                        rc = n != 1 ? FILE_WRITE_ERROR : rc;
+    if (matrix == NULL || kernel == NULL || res == NULL) {
+        rc = FUNC_ARGS_ERROR;
+    } else if (res->rows != matrix->rows || res->cols != matrix->cols) {
+        rc = FUNC_ARGS_ERROR;
+    } else {
+        const int kh = (int) kernel->rows;
+        const int kw = (int) kernel->cols;
+        const int ch = kh / 2;
+        const int cw = kw / 2;
+        const int mh = (int) matrix->rows;
+        const int mw = (int) matrix->cols;
+
+        for (int i = 0; i < mh; ++i) {
+            for (int j = 0; j < mw; ++j) {
+                int32_t sum = 0;
+                for (int ki = 0; ki < kh; ++ki) {
+                    int ii = i - ch + ki;
+                    if (ii >= 0 && ii < mh) {
+                        for (int kj = 0; kj < kw; ++kj) {
+                            int jj = j - cw + kj;
+                            if (jj >= 0 && jj < mw) {
+                                sum += matrix->data[ii][jj] * kernel->data[ki][kj];
+                            }
+                        }
                     }
                 }
+                if (sum > 255)
+                    sum %= UNSIGNED_MODULE;
+                else if (sum < 0)
+                    sum = (-sum) % SIGNED_MODULE;
+                res->data[i][j] = sum;
             }
         }
     }
     return rc;
+}
+
+int write_output_matrix(const char *filename, const Matrix *matrix,
+                        long elems_offset, long first_elem_offset) {
+    int rc = EXIT_SUCCESS;
+    FILE *f = fopen(filename, "r+b");
+
+    if (f == NULL) {
+        f = fopen(filename, "wb");
+    }
+
+    if (f == NULL) {
+        rc = FILE_OPEN_ERROR;
+    }
+
+    if (rc == EXIT_SUCCESS) {
+        if (fseek(f, 0, SEEK_SET) != 0 ||
+            fwrite(&matrix->rows, SIMPLE_MATRIX_SIZE_BYTES, 1, f) != 1 ||
+            fwrite(&matrix->cols, SIMPLE_MATRIX_SIZE_BYTES, 1, f) != 1)
+            rc = FILE_WRITE_ERROR;
+    }
+
+    if (rc == EXIT_SUCCESS) {
+        if (fseek(f, 2 * SIMPLE_MATRIX_SIZE_BYTES + first_elem_offset, SEEK_SET) != 0)
+            rc = FILE_WRITE_ERROR;
+    }
+
+    for (size_t i = 0; i < matrix->rows && rc == EXIT_SUCCESS; ++i) {
+        for (size_t j = 0; j < matrix->cols && rc == EXIT_SUCCESS; ++j) {
+            uint8_t buf = (uint8_t) matrix->data[i][j];
+            if (fwrite(&buf, 1, 1, f) != 1) {
+                rc = FILE_WRITE_ERROR;
+            } else if (i != matrix->rows - 1 || j != matrix->cols - 1) {
+                if (fseek(f, elems_offset, SEEK_CUR) != 0)
+                    rc = FILE_WRITE_ERROR;
+            }
+        }
+    }
+
+    if (f != NULL) {
+        if (fclose(f) != 0 && rc == EXIT_SUCCESS)
+            rc = FILE_WRITE_ERROR;
+    }
+
+    return rc;
+}
+
+void destruct_matrix(Matrix *matrix) {
+    if (matrix == NULL) return;
+    if (matrix->data != NULL) {
+        for (size_t i = 0; i < matrix->rows; ++i) {
+            free(matrix->data[i]);
+        }
+        free(matrix->data);
+    }
+    free(matrix);
 }

@@ -9,9 +9,10 @@ target_compile_options(YadroSystemProg PRIVATE
         -Wall
         -Wextra
         -Wvla
-        -fsanitize=address,undefined
-        -fno-omit-frame-pointer
-        -g
+#        -fsanitize=address,undefined
+#        -fno-omit-frame-pointer
+#        -g
+        -O2
         -std=c17
 )
 
